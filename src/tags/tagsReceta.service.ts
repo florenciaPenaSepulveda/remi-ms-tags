@@ -1,78 +1,116 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
-import { RedisClient } from '../redis/redis.client';
-import { TagsService } from './tags.service';
-import { Tag } from './schemas/tag.schema';
+import { Inject, Injectable } from '@nestjs/common';
+import { RpcException } from '@nestjs/microservices';
+import Redis from 'ioredis';
+import { REDIS } from '../redis/redis.module';
+import { Tag, TagsService } from './tags.service';
+
+const claveDeRecetas = (id: string) => `tag:${id}:recipes`;
+const claveDeEtiquetas = (recipeId: string) => `recipe:${recipeId}:tags`;
 
 @Injectable()
-export class TagsRecetaService implements OnModuleInit {
-  private redisClient: any;
-
+export class TagsRecetaService {
   constructor(
-    private readonly redisClientProvider: RedisClient,
+    @Inject(REDIS) private readonly redis: Redis,
     private readonly tagsService: TagsService,
   ) {}
 
-  async onModuleInit() {
-    this.redisClient = this.redisClientProvider.getClient().redis;
+  async addTagsToRecipe(recipeId: string, tagIds: string[]): Promise<string[]> {
+    const ids = [...new Set(tagIds)];
+    await this.exigirExistentes(ids);
+    if (ids.length) {
+      const transaccion = this.redis
+        .multi()
+        .sadd(claveDeEtiquetas(recipeId), ...ids);
+      ids.forEach((id) => transaccion.sadd(claveDeRecetas(id), recipeId));
+      await transaccion.exec();
+    }
+    return this.redis.smembers(claveDeEtiquetas(recipeId));
   }
 
-  // Agregar tags a una receta
-  async addTagsToRecipe(recipeId: string, tagIds: string[]): Promise<void> {
-    const key = `recipe:${recipeId}:tags`;
-    await this.redisClient.sadd(key, ...tagIds);
+  async setRecipeTags(recipeId: string, tagIds: string[]): Promise<string[]> {
+    const nuevos = [...new Set(tagIds)];
+    await this.exigirExistentes(nuevos);
+    const actuales = await this.redis.smembers(claveDeEtiquetas(recipeId));
+    const transaccion = this.redis.multi().del(claveDeEtiquetas(recipeId));
+    actuales
+      .filter((id) => !nuevos.includes(id))
+      .forEach((id) => transaccion.srem(claveDeRecetas(id), recipeId));
+    if (nuevos.length) {
+      transaccion.sadd(claveDeEtiquetas(recipeId), ...nuevos);
+      nuevos.forEach((id) => transaccion.sadd(claveDeRecetas(id), recipeId));
+    }
+    await transaccion.exec();
+    return nuevos;
   }
 
-  // Remover un tag de una receta
-  async removeTagRecipe(recipeId: string, tagId: string): Promise<void> {
-    const key = `recipe:${recipeId}:tags`;
-    await this.redisClient.srem(key, tagId);
+  async removeTagRecipe(recipeId: string, tagId: string) {
+    await this.redis
+      .multi()
+      .srem(claveDeEtiquetas(recipeId), tagId)
+      .srem(claveDeRecetas(tagId), recipeId)
+      .exec();
+    return this.getRecipeTag(recipeId);
   }
 
-  async removeAllTagsRecipe(recipeId: string): Promise<void> {
-    const key = `recipe:${recipeId}:tags`;
-    await this.redisClient.del(key);
+  async removeAllTagsRecipe(recipeId: string) {
+    const actuales = await this.redis.smembers(claveDeEtiquetas(recipeId));
+    const transaccion = this.redis.multi().del(claveDeEtiquetas(recipeId));
+    actuales.forEach((id) => transaccion.srem(claveDeRecetas(id), recipeId));
+    await transaccion.exec();
+    return { recipeId, tagsRemoved: actuales.length };
   }
 
-  // SOLO GET RECIPETAGS LLEGA AQUI
-  async getRecipeTag(recipeId: string): Promise<string[]> {
-    const key = `recipe:${recipeId}:tags`;
-    return await this.redisClient.smembers(key);
+  getRecipeTag(recipeId: string): Promise<string[]> {
+    return this.redis.smembers(claveDeEtiquetas(recipeId));
   }
 
-  // Obtener tags completos (con nombre)
   async getRecipeTags(recipeId: string): Promise<Tag[]> {
-    const tagIds = await this.getRecipeTag(recipeId);
-    const tags: Tag[] = [];
-
-    for (const tagId of tagIds) {
-      const tag = await this.tagsService.findOne(tagId);
-      if (tag) {
-        tags.push(tag);
-      }
-    }
-
-    return tags;
+    const ids = await this.getRecipeTag(recipeId);
+    const etiquetas = await this.tagsService.leer(ids);
+    return etiquetas.sort((a, b) => a.name.localeCompare(b.name, 'es'));
   }
 
-  // Verificar si una receta tiene un tag específico
+  async getTagsOfRecipes(recipeIds: string[]): Promise<Record<string, Tag[]>> {
+    if (!recipeIds.length) {
+      return {};
+    }
+    const pipeline = this.redis.pipeline();
+    recipeIds.forEach((id) => pipeline.smembers(claveDeEtiquetas(id)));
+    const respuestas = (await pipeline.exec()) ?? [];
+    const idsPorReceta = respuestas.map(([, ids]) => (ids ?? []) as string[]);
+    const unicos = [...new Set(idsPorReceta.flat())];
+    const porId = new Map(
+      (await this.tagsService.leer(unicos)).map((t) => [t.id, t]),
+    );
+    return Object.fromEntries(
+      recipeIds.map((recipeId, i) => [
+        recipeId,
+        idsPorReceta[i].flatMap((id) => porId.get(id) ?? []),
+      ]),
+    );
+  }
+
   async recipeHasTag(recipeId: string, tagId: string): Promise<boolean> {
-    const key = `recipe:${recipeId}:tags`;
-    return (await this.redisClient.sismember(key, tagId)) === 1;
+    return (
+      (await this.redis.sismember(claveDeEtiquetas(recipeId), tagId)) === 1
+    );
   }
 
-  // Obtener todas las recetas que tienen un tag específico
   async getRecipesByTag(tagId: string): Promise<string[]> {
-    const pattern = 'recipe:*:tags';
-    const keys = await this.redisClient.keys(pattern);
-    const recipeIds: string[] = [];
+    await this.tagsService.findOne(tagId);
+    return this.redis.smembers(claveDeRecetas(tagId));
+  }
 
-    for (const key of keys) {
-      const hasTag = await this.redisClient.sismember(key, tagId);
-      if (hasTag === 1) {
-        const recipeId = key.split(':')[1];
-        recipeIds.push(recipeId);
-      }
+  private async exigirExistentes(ids: string[]) {
+    const existentes = new Set(
+      (await this.tagsService.leer(ids)).map((t) => t.id),
+    );
+    const faltantes = ids.filter((id) => !existentes.has(id));
+    if (faltantes.length) {
+      throw new RpcException({
+        status: 404,
+        message: `Etiquetas no encontradas: ${faltantes.join(', ')}`,
+      });
     }
-    return recipeIds;
   }
 }
