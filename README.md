@@ -1,98 +1,89 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Remi Recetas · Servicio de etiquetas
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+[![CI](https://github.com/florenciaPenaSepulveda/remi-ms-tags/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/florenciaPenaSepulveda/remi-ms-tags/actions/workflows/ci.yml)
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Microservicio de **Remi Recetas** que guarda las etiquetas (por ejemplo "Vegano" o "Postre") y las asocia a las recetas. No expone HTTP: escucha mensajes en una cola de RabbitMQ y responde al [gateway](https://github.com/florenciaPenaSepulveda/remi-gateway). Hecho con NestJS 11 y Redis.
 
-## Description
+## Repositorios del sistema
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+| Repositorio | Función |
+|---|---|
+| [remi-gateway](https://github.com/florenciaPenaSepulveda/remi-gateway) | API HTTP pública, autenticación y enrutamiento |
+| [remi-ms-users](https://github.com/florenciaPenaSepulveda/remi-ms-users) | Usuarios, inicio de sesión y tokens |
+| [remi-ms-recetas](https://github.com/florenciaPenaSepulveda/remi-ms-recetas) | Recetas e ingredientes |
+| **remi-ms-tags** (este) | Etiquetas de las recetas |
+| [remi-ms-socials](https://github.com/florenciaPenaSepulveda/remi-ms-socials) | Me gusta y comentarios |
+| [remi-frontend](https://github.com/florenciaPenaSepulveda/remi-frontend) | Aplicación web en React |
 
-## Project setup
+## Modelo de datos en Redis
 
-```bash
-$ npm install
-```
+| Clave | Tipo | Contenido |
+|---|---|---|
+| `tag:{id}` | hash | `id` y `name` de la etiqueta |
+| `tags:all` | set | IDs de todas las etiquetas |
+| `tag:slug:{nombre}` | string | ID que reserva el nombre (en minúsculas y sin tildes) para que sea único |
+| `recipe:{recipeId}:tags` | set | Etiquetas de una receta |
+| `tag:{id}:recipes` | set | Recetas de una etiqueta (índice inverso) |
 
-## Compile and run the project
+Cada cambio que toca varias claves se hace en una transacción (`MULTI`), así el índice inverso nunca queda desfasado, y las consultas por etiqueta usan ese índice en lugar de recorrer todas las claves. No necesita módulos de Redis: sirve un Redis estándar.
 
-```bash
-# development
-$ npm run start
+## Mensajes que atiende
 
-# watch mode
-$ npm run start:dev
+| Patrón | Datos | Respuesta |
+|---|---|---|
+| `create_tag` | `name` | Etiqueta (409 si el nombre ya existe) |
+| `get_all_tags` | — | Etiquetas ordenadas por nombre |
+| `find_tag_by_id` | `id` | Etiqueta o 404 |
+| `find_tags_by_name` | `name` | Etiquetas cuyo nombre contiene el texto |
+| `update_tag` | `id`, `updateTagDto` | Etiqueta renombrada |
+| `delete_tag` | `id` | La quita de todas las recetas |
+| `add_tags_to_recipe` | `recipeId`, `tagIds` | IDs de etiquetas de la receta |
+| `set_recipe_tags` | `recipeId`, `tagIds` | Reemplaza el conjunto completo |
+| `remove_tag_from_recipe` | `recipeId`, `tagId` | IDs restantes |
+| `remove_all_tags_from_recipe` | `recipeId` | `{ recipeId, tagsRemoved }` |
+| `get_recipe_tags` / `get_recipe_tag_ids` | `recipeId` | Etiquetas completas / solo IDs |
+| `get_tags_of_recipes` | `recipeIds` | Mapa receta → etiquetas, en una sola consulta |
+| `get_recipes_by_tag` | `tagId` | IDs de recetas |
+| `recipe_has_tag` | `recipeId`, `tagId` | `true` o `false` |
 
-# production mode
-$ npm run start:prod
-```
+Los nombres se limpian (espacios repetidos) y no se distinguen mayúsculas ni tildes: "Rápido" y "rapido" son la misma etiqueta. Solo se pueden asociar etiquetas que existan. Los errores viajan como `{ status, message }` y el gateway los convierte en respuestas HTTP.
 
-## Run tests
+## Requisitos
 
-```bash
-# unit tests
-$ npm run test
+- Node.js 24 (ver `.nvmrc`).
+- Redis y RabbitMQ. El `docker-compose.yml` del gateway los levanta.
 
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Puesta en marcha
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+cp .env.example .env
+npm ci
+npm run start:dev
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+| Variable | Descripción | Por defecto |
+|---|---|---|
+| `REDIS_URL` | Conexión a Redis | `redis://localhost:6379` |
+| `AMQP_URI` | Conexión a RabbitMQ | `amqp://localhost:5672` |
+| `TAGS_QUEUE` | Cola que escucha | `tags_queue` |
 
-## Resources
+## Pruebas
 
-Check out a few resources that may come in handy when working with NestJS:
+```bash
+npm test
+npm run test:cov
+npm run lint
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+Las pruebas levantan el servicio completo (validación y errores incluidos) sobre transporte TCP y lo consultan como lo haría el gateway; necesitan un Redis en `REDIS_URL` (por defecto `redis://localhost:6380/15`, la base 15) y la vacían antes de cada prueba, así que no la apuntes a una base con datos. El CI ejecuta lint, compilación y pruebas con cobertura.
 
-## Support
+## Docker
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+```bash
+docker build -t remi-ms-tags .
+docker run --env-file .env remi-ms-tags
+```
 
-## Stay in touch
+## Autoría
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Proyecto desarrollado en equipo durante la carrera. Esta copia forma parte del portafolio de [Florencia Peña Sepúlveda](https://github.com/florenciaPenaSepulveda), que la revisó, corrigió y documentó.
