@@ -4,6 +4,19 @@
 
 Microservicio de **Remi Recetas** que guarda las etiquetas (por ejemplo "Vegano" o "Postre") y las asocia a las recetas. No expone HTTP: escucha mensajes en una cola de RabbitMQ y responde al [gateway](https://github.com/florenciaPenaSepulveda/remi-gateway). Hecho con NestJS 11 y Redis.
 
+## Inicio rápido
+
+Necesita: Redis y RabbitMQ (`docker compose up -d` en `remi-gateway`).
+
+```bash
+cp .env.example .env
+npm ci
+npm run start:dev
+npm test
+```
+
+21 pruebas, 99 % de cobertura.
+
 ## Repositorios del sistema
 
 | Repositorio | Función |
@@ -12,7 +25,7 @@ Microservicio de **Remi Recetas** que guarda las etiquetas (por ejemplo "Vegano"
 | [remi-ms-users](https://github.com/florenciaPenaSepulveda/remi-ms-users) | Usuarios, inicio de sesión y tokens |
 | [remi-ms-recetas](https://github.com/florenciaPenaSepulveda/remi-ms-recetas) | Recetas e ingredientes |
 | **remi-ms-tags** (este) | Etiquetas de las recetas |
-| [remi-ms-socials](https://github.com/florenciaPenaSepulveda/remi-ms-socials) | Me gusta y comentarios |
+| [remi-ms-socials](https://github.com/florenciaPenaSepulveda/remi-ms-socials) | Puntuaciones, comentarios, recetario e impacto |
 | [remi-frontend](https://github.com/florenciaPenaSepulveda/remi-frontend) | Aplicación web en React |
 
 ## Modelo de datos en Redis
